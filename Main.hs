@@ -14,8 +14,20 @@ import Control.Monad.State.Strict
 
 import Data.Functor.Foldable
 import Data.Either
+import Data.List
+import qualified Data.Set as S
+
+import Debug.Trace
 
 main = print 3
+
+demo1 = p 
+ $ nub 
+ $ runIdentity 
+ $ run 
+ $ mapM (runExceptT . tc) 
+ $ run 
+ $ gen 5
 
 data Id 
  = Fresh !Int
@@ -59,7 +71,7 @@ close x = go 0
       if x == y 
         then Bound k
         else case y of
-          Bound k -> Bound (k+1) 
+          Bound k -> Bound k 
           e -> recurseWithBindLevel go k e
 
 sub :: Term -> Term -> Term -> Term 
@@ -76,14 +88,18 @@ data TypeCheckingErr
   | FlewTooHigh
   | QuantifiedOverValue
   | NotPiType
-  deriving(Show)
+  | Mismatch Term Term
+  deriving(Eq, Ord, Show)
 
 run :: Monad m => Thm m a -> m a
 run = (`evalStateT` 0) . (`runReaderT` [])
 
+runWithCtx :: Monad m => Ctx -> Thm m a -> m a
+runWithCtx ctx = (`evalStateT` 0) . (`runReaderT` ctx)
+
 fromRight' (Right a) = a 
 
-fresh :: Monad m => Thm m Id 
+fresh :: MonadState Int m => m Id 
 fresh = do 
  n <- get 
  put (n+1)
@@ -95,15 +111,20 @@ red (App a b) =
     e -> App e $ red b 
 red e = recurse red e  
 
+unwrap :: 
+  (MonadReader Ctx m,
+  MonadState Int m ) => 
+  Term -> ((Id, Term) -> m Term) -> m Term
 unwrap e f = case e of  
   Lam a b -> go a b f 
   Pi  a b -> go a b f 
-  where 
+  where
+    go :: (MonadState Int m, MonadReader Ctx m) => Term -> Term -> ((Id, Term) -> m Term) -> m Term
     go a b f = do 
       x <- fresh 
       local ((x,a):) $ f (x, open (Free x) b)
 
-tc :: Term -> Thm (Either TypeCheckingErr) Term
+tc :: Monad m => Term -> ExceptT TypeCheckingErr (Thm m) Term 
 tc (Free a) = do
   ctx <- ask 
   case lookup a ctx of 
@@ -117,13 +138,17 @@ tc e@(Lam a b) = do
 tc (App a b) = do 
   ta <- tc a 
   assertIsPi ta 
-  tb <- tc b 
-  return undefined
-tc (Pi a b) = do 
+  let (Pi tb' ta') = ta 
+  tb <- tc b
+  if red tb == red tb' 
+    then return $ open b ta'
+    else throwError (Mismatch tb tb')
+tc e@(Pi a b) = do 
   assertNotValueOrType a 
-  assertNotValueOrType b
   ta <- tc a 
-  tb <- tc b 
+  unwrap e $ \(x, b') -> do
+  assertNotValueOrType b'
+  tb <- tc b'
   return Type
 tc Prop = return Type 
 tc Type = throwError FlewTooHigh
@@ -144,29 +169,140 @@ isPi = \case
   Pi _ _ -> True 
   _ -> False 
 
+genTo :: Int -> Thm [] Term 
+genTo k = do 
+  k' <- liftThm [1..k]
+  gen k'
+
+spy x = trace ("!" ++ show x) x
+
 gen :: Int -> Thm [] Term
 gen 1 = do 
   ctx <- ask
-  liftThm $ Prop : map (Free . fst) ctx 
+  liftThm $ Prop : map (Free . fst) ctx
 gen k = do 
   ka <- liftThm [1..k-1]
   let kb = k - ka 
   a <- gen ka
+  assertWellTyped a
   join $ liftThm $ 
     [ genApps a kb 
     , genLams a kb 
     , genPis  a kb 
     ]
 genApps a kb = do 
-  b <- gen kb 
-  return $ App a b
+  b <- gen kb
+  let e = App a b 
+  assertWellTyped e 
+  return e
 genLams a kb = genBinder Lam a kb 
 genPis  a kb = genBinder Pi  a kb 
 genBinder binder a kb = do 
   x <- fresh 
-  local ((x,Prop):) $ do 
+  local ((x, a):) $ do 
   b <- gen kb 
-  return $ binder a $ close (Free x) b 
+  let e = binder a $ close (Free x) b 
+  assertWellTyped e 
+  return e 
+
+assertWellTyped a = do 
+  ta <- runExceptT $ tc a 
+  guard (isRight ta)
+
+isConstant a = 
+  (close (Free $ Named "__IMPOSSIBLE__") $ open Type a) == a 
+
+isClosedTerm (Bound _) = False
+isClosedTerm (App a b) = isClosedTerm a && isClosedTerm b 
+isClosedTerm (Lam a b) = 
+  isClosedTerm a && (isClosedTerm $ open Type b) 
+isClosedTerm (Pi  a b) = 
+  isClosedTerm a && (isClosedTerm $ open Type b) 
+isClosedTerm _ = True
+
+conclusions e = filter isClosedTerm $ unsafeConclusions e 
+ 
+unsafeConclusions e@(Pi a b) = e : unsafeConclusions b 
+unsafeConclusions e = [e]
+
+redundant (Pi  a b) = isConstant b 
+redundant (Lam a b) = isConstant b
+redundant _ = False
+
+getContextFreeType = fromRight' . runIdentity . run . runExceptT . tc 
+
+getType ctx = fromRight' . runIdentity . runWithCtx ctx . runExceptT . tc
+
+getConclusions = conclusions . getContextFreeType
+
+sample k = 
+   map (\a -> (a, getContextFreeType a))
+ $ run 
+ $ genTo k
+
+sampleOnA k = 
+  map (\a -> (a, getType aContext a)) 
+  $ runWithCtx aContext $ genTo k 
+
+aContext = [(Named "X", Prop)]
+
+-- pool k = nub $ map snd novelties
+--   where 
+--     novelties = (`filter` s) 
+--       (\(a, ta) -> 
+--          if redundant a then True else True
+--       )
+--     s = sample k 
+
+pool k = nub $ map snd novelties
+  where 
+    novelties = (`filter` s) 
+      (\(a, ta) -> 
+        (5 + adjustedSize a > size ta)
+        && (not $ redundant a)
+        && (all (not . flip elem theorems) (tail $ conclusions ta))
+      )
+    s = sampleOnA k 
+    theorems = map snd s
+
+size (App a b) = 1 + size a + size b 
+size (Lam a b) = 1 + size a + size b 
+size (Pi  a b) = 1 + size a + size b 
+size e = 1
+
+adjustedSize (Lam a b) = adjustedSize b 
+adjustedSize a = size a 
+
+pretty pool (q:qs) ctx (Lam Prop a) = 
+ "(\\" ++ q ++ ": * . " ++ pretty pool qs (q:ctx) a ++ ")"
+pretty (p:ps) qool ctx (Lam a b) = 
+  "(\\" ++ p ++ " : " 
+  ++ pretty ps qool ctx a 
+  ++ " . " ++ pretty ps qool (p:ctx) b ++ ")"
+pretty pool (q:qs) ctx (Pi Prop a) = 
+  "(" ++ q ++ " : * . " ++ pretty pool qs (q:ctx) a ++ ")"
+pretty (p:ps) qool ctx (Pi a b) = 
+  if isConstant b
+  then "(" ++ pretty (p:ps) qool ctx a ++ " => " 
+       ++ pretty (p:ps) qool ("&":ctx) b ++ ")"
+  else 
+    "(" ++ p ++ " : " 
+    ++ pretty ps qool ctx a 
+    ++ " . " ++ pretty ps qool (p:ctx) b ++ ")"
+pretty pool qool ctx (App a b) = 
+  "(" ++ pretty pool qool ctx a ++ ")(" ++ pretty pool qool ctx b ++ ")"
+pretty _ _ ctx (Bound k) = ctx !! k
+pretty _ _ ctx (Free (Named name)) = name
+pretty _ _ _ Prop = "*"
+pretty _ _ _ Type = "@"
+
+pp = 
+  pretty 
+  (map pure "abcdefghijklmnopqrstuvwxyz")
+  (map pure "ABCDEFGHIJKLMNOPQRSTUVWXYZ") 
+  []
+
+ppp = putStrLn . unlines . map pp
 
 p :: Show a => [a] -> IO ()
 p = putStrLn . unlines . map show
