@@ -1,26 +1,213 @@
--- {-# LANGUAGE 
---   DeriveFunctor
--- , PatternSynonyms 
--- , LambdaCase
--- , BangPatterns
--- , FlexibleContexts
--- #-}
-
 module Main where
 
+import Data.List
+import Data.Maybe
+import Control.Monad
+
+import Debug.Trace
+
+-- delete a (a':as)
+--  | a == a' = delete a as
+--  | otherwise = a' : delete a as
+
+-- as \\ (b : bs) = (delete b as) \\ bs
+-- as \\ [] = as 
+
+-- isJust (Just _) = True
+-- isJust _ = False
+
+main = print 1 
+
 type N = String 
+
+infixl 5 :& 
+infixr 4 :\. 
+infixr 4 :->
+infixl 3 :|-
 
 data T  
  = F N 
  | B Int 
- | A T T 
- | L T T 
- | P T T 
+ | T :& T 
+ | T :\. T 
+ | T :-> T 
  | K Int 
+ deriving(Ord, Show)
 
- data C = C [(N,T)] T
+r f g (a :& b) = f a :& f b
+r f g (a :\. b) = f a :\. g b
+r f g (a :-> b) = f a :-> g b 
+r f g t = t 
 
- 
+rb f n = r (f n) (f $ n + 1)
+
+o s t = go 0 t 
+  where 
+    go n s'
+     | (s' == B n) = s 
+     | otherwise  = rb go n s'
+
+c s t = go 0 t 
+  where 
+    go n s' 
+     | (s == s') = B n 
+     | otherwise = rb go n s' 
+
+nf (a :& b) = 
+  case nf a of 
+    _ :\. a' -> o (nf b) a' 
+    a' -> a' :& (nf b)
+nf (a :\. b) = nf a :\. nf b 
+nf (a :-> b) = nf a :-> nf b 
+nf t = t 
+
+a === b = 
+  case (a, b) of
+    (F n, F n') -> n == n'
+    (B n, B n') -> n == n'
+    (K n, K n') -> n == n'
+    (a :&  b, a' :&  b') -> a === a' && b === b'
+    (a :\. b, a' :\. b') -> a === a' && b === b'
+    (a :-> b, a' :-> b') -> a === a' && b === b'
+    _ -> False
+
+instance Eq T where
+  a == b = (nf a === nf b)
+
+data C a
+ = [(N,T)] :|- a 
+ deriving(Eq, Ord, Show)
+
+instance Functor C where
+  fmap f (ctx :|- t) = ctx :|- f t
+
+f =<= (ctx :|- b) = ctx :|- f (ctx :|- b)
+a =>= f = (f =<= a)
+
+ex (_ :|- t) = t
+
+lift (ctx :|- t) = (ctx :|-) <$> t
+
+fr ctx = F $ head $ map return ['a'..] \\ map fst ctx
+
+pop (ctx :|- t) = 
+  case t of 
+    a :\. b -> go a b
+    a :-> b -> go a b
+  where
+    go a b = (f, a):ctx :|- o (F f) b
+    F f = fr ctx 
+
+push x ((n,tn):ctx :|- t) = ctx :|- tn `x` c (F n) t
+
+use ctx = (ctx :|-) $ map (F . fst) ctx
+
+isK (K _) = True
+isK _ = False 
+
+pts a b = b 
+
+tc e@(ctx :|- t) = 
+  case t of
+    K n -> return $ K (n+1)
+    F n -> lookup n ctx
+    a :& b -> do
+      ta <- tc (ctx :|- a)
+      tb <- tc (ctx :|- b)
+      case ta of 
+        tb' :-> ta'
+         | tb' == tb -> return $ o a ta'
+        _ -> Nothing
+    a :\. b -> do
+      ta <- tc (ctx :|- a)
+      guard (isK ta)
+      tb <- lift $ tc =<= pop e
+      return $ ex $ push (:->) tb
+    a :-> b -> do
+      ta <- tc (ctx :|- a)
+      guard (isK ta)
+      tb <- ex $ tc =<= pop e
+      guard (isK tb)
+      return $ pts ta tb
+
+std = [("A", K 0)]
+
+isLevel k (ctx :|- t) = ttt == Just (K k)
+  where ttt = tc =<< lift (tc =<= (ctx :|- t))
+
+split n = zip (reverse [0..n-1]) [0..n-1]
+
+good ctx t = isJust $ tc $ ctx :|- t
+
+enum k n ctx = 
+  filter (good ctx) $ enumHead k n ctx ++ enumBind k n ctx
+
+enumHead k 0 ctx =
+  map ex $ filter (isLevel k) $ lift $ use ctx
+enumHead k n ctx = do
+  (na, nb) <- split n
+  a <- enumHead k na ctx
+  b <- enumHead k nb ctx
+  let t = a :& b
+  return $ t
+
+enumBind k 0 ctx = []
+enumBind k n ctx = do
+  (na, nb) <- split n
+  a <- (if na == 0 then (K 0:) else id) $ enum 1 na ctx
+  let F f = fr ctx
+  b <- enum k nb ((f, a):ctx)
+  let x = if k == 0 then (:\.) else (:->)
+  let t = a `x` c (F f) b
+  return $ t
+
+pp a = putStrLn $ unlines $ map show a
+
+-- q = putStrLn $ unlines $ map show $ sort $ nub $ map (tc . ([] :|-)) $ enum 5 []
+
+-- enumProps n ctx = filter (\a -> tc ([] :|- a) == Just (K 0)) $ enum 5 ctx
+
+size (a :\. b) = size b
+size (a :-> b) = size b
+size t = asize t
+
+asize (a :&  b) = asize a + asize b
+asize (a :\. b) = asize a + asize b
+asize (a :-> b) = asize a + asize b
+asize _ = 1
+
+proves ctx t tt = tc (ctx :|- t) == Just tt
+
+proof limit ctx thm = take 1 $ 
+  [ t 
+  | n <- [0..limit] 
+  , t <- pfs !! n 
+  , proves ctx t thm
+  ]
+
+proof0 limit ctx thm = 
+  case proof limit ctx thm of
+    []  -> Nothing
+    t:_ -> Just t
+
+quality (Nothing, _) = -100
+quality (Just t, thm) = 
+  size t - size thm
+
+
+pfs  = [ enum 0 n [] | n <- [0..]]
+thms = [ enum 1 n [] | n <- [0..]]
+
+-- K 0 :\. (B 0 :\. (K 0 :\. ((B 2 :-> B 1) :\. B 0 :& B 2)))
+-- pp $ map (\x -> (p0 6 [] x,x)) $ thms !! 3
+Just thm = tc $ [] :|- K 0 :\. (B 0 :\. (K 0 :\. ((B 2 :-> B 1) :\. B 0 :& B 2)))
+-- pp $ map (\x -> (quality x, x)) $ map (\x -> (proof0 6 [] x, x)) $ thms !! 6
+
+
+
+
+
+
 -- {-# LANGUAGE 
 --   DeriveFunctor
 -- , PatternSynonyms 
