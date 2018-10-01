@@ -50,10 +50,13 @@ o s t = go 0 t where
    | (s' == B n) = s
    | otherwise = rb go n s'
 
-fr c n = n ++ "." ++ show (length c)
+fr c n = n' ++ "." ++ show (length ns)
+  where ns = filter (n' ==) $ map (strip . nam) c
+        n' = strip n
 
-strip n = if null n' then n else n' where
-  n' = reverse $ tail $ dropWhile ('.' /=) $ reverse n
+strip (a : '.' : _) = [a]
+strip (a : bs) = a : strip bs
+strip a = a
 
 o' (c :- e) = case q e of 
   Left (n, a, x, b) -> (n' :. a) : c :- o (V n') b
@@ -72,6 +75,7 @@ lk (n' :. a : xs) n
  | otherwise = lk xs n
 
 typ (_ :. t) = t
+nam (n :. _) = n
 
 lki ctx n = typ (ctx !! n)
 
@@ -270,10 +274,15 @@ data Problem = Problem E [Ctx B] [Eqn] deriving(Eq, Ord, Show)
 instance MSub Problem where
   msub n t (Problem a b c) = Problem (msub n t a) (msub n t b) (msub n t c)
 
+data Delta = Delta [(N, E)] [Ctx B] [Eqn]
+
 headNF e = go (nf e) [] where
   go e args = case e of
     a :@ b -> go a (b : args)
     _ -> (e, args)
+
+applyDelta (Delta subs exs' eqns') (Problem e exs eqns)  = 
+  foldr (uncurry msub) (Problem e (exs ++ exs') (eqns ++ eqns'))
 
 splitEqn (Eqn a b) = 
   let (ha, as) = headNF a
@@ -289,8 +298,11 @@ bad eq = case eq of
 
 resolveK (c :- n :. K m) | m > 0 = ([(n, K (m-1))], [])
 
-openLam (c :- n :. (b :> e)) = ([(n, b :\ M n')], [ b : c :- n' :. e ])
-  where n' = fr c n
+openLam (c :- n :. (b :> e)) = ([(n, b' :\ M n')], [ b' : c :- n' :. e' ])
+  where b' : _ :- e' = o' (c :- b :> e)
+        n' = "-" ++ n
+-- openLam (c :- n :. (b :> e)) = ([(n, b :\ M n')], [ b : c :- n' :. e ])
+--   where n' = fr c n
 openLam (c :- e) = ([], [c :- e])
 
 args q = case q of
@@ -319,9 +331,6 @@ stabilize (x : y : ys) | x == y = x
 stabilize (x : xs) = stabilize xs
 
 stripCtx (Problem _ exs _) = map (\(c :- e) -> e) exs
-
--- thm = 
---   "x" :. V "Z" :\
 
 
 
