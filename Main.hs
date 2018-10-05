@@ -1,24 +1,36 @@
+{-# LANGUAGE PatternSynonyms #-}
+{-# LANGUAGE ViewPatterns #-}
+{-# LANGUAGE PatternGuards #-}
+{-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE FlexibleInstances #-}
+
+
 module Main where
 
 import Data.List
 import Data.Maybe
 import Control.Monad
+import Control.Arrow
 
 import Debug.Trace
 
 main = print 1
 
 type N = String
-tick = ('.':)
 
 type I = Int
 
 data B = N :. E
   deriving (Eq, Ord, Show)
 
+infixl 6 :.
+
+nam (n :. e) = n
+typ (n :. e) = e
+
 data E
  = B I
- | V N
+ | F N
  | E :@ E
  | B :\ E
  | B :> E
@@ -26,311 +38,146 @@ data E
  | M N
  deriving (Eq, Ord, Show)
 
-infixl 6 :.
 infixl 4 :@
 infixr 3 :\
-infixr 3 :>
- 
-q e = case e of
-  n :. a :\ b -> Left (n, a, (:\), b)
-  n :. a :> b -> Left (n, a, (:>), b)
-  _ -> Right e
+infixr 3 :> 
 
-r f g e = case q e of
-  Left (n, a, x, b) -> (n :. f a) `x` g b
-  Right (a :@ b) -> f a :@ f b
-  _ -> e
+pattern P = K 0
+pattern T = K 1
+
+asBinder = \case
+  a :\ b -> Just $ (a, (:\), b)
+  a :> b -> Just $ (a, (:>), b)
+  _ -> Nothing
+
+pattern Binder a x b <- (asBinder -> Just (a, x, b))
+  where Binder a x b = x a b
+
+splitApp = second reverse . go where
+  go = \case
+    a :@ b -> (h, b : cs) where (h, cs) = go a
+    e -> (e, [])
+
+instance Eq (B -> E -> E) where
+  x == y = 
+    x ("" :. B 0) (B 0) 
+    ==
+    y ("" :. B 0) (B 0)
+
+splitBinder x = \case
+  Binder a x' b | x == x' -> (h, a : cs) 
+    where (h, cs) = splitBinder x b
+  e -> (e, [])
+
+splitLam = splitBinder (:\)
+
+splitPi = splitBinder (:>)
+
+pattern a :@@ bs <- (splitApp -> (a, bs))
+  where a :@@ bs = foldl (:@) a bs
+
+pattern (:\\) :: [B] -> E -> E
+pattern as :\\ b <- (splitLam -> (b, as))
+  where as :\\ b = foldr (:\) b as
+
+pattern (:>>) :: [B] -> E -> E
+pattern as :>> b <- (splitPi -> (b, as))
+  where as :>> b = foldr (:>) b as
+
+r f g = \case
+  Binder (n :. a) x b -> (n :. f a) `x` g b
+  a :@ b -> f a :@ f b
+  e -> e
 
 r' f = r f f
 
 rb f n = r (f n) (f $ n + 1)
 
-o s t = go 0 t where 
-  go n s'
-   | (s' == B n) = s
-   | otherwise = rb go n s'
+op t = go 0 where
+  go i = \case
+   e | e == B i -> t
+     | otherwise -> rb go i e
 
-fr c n = n' ++ "." ++ show (length ns)
-  where ns = filter (n' ==) $ map (strip . nam) c
-        n' = strip n
+cl t = go 0 where
+  go i = \case
+   e | e == t -> B i
+     | otherwise -> rb go i e
 
-strip (a : '.' : _) = [a]
-strip (a : bs) = a : strip bs
-strip a = a
+nf = \case
+  (nf -> a) :@ (nf -> b) 
+   | _ :\ f <- a -> nf $ op b f
+   | otherwise -> a :@ b
+  e -> r' nf e
 
-o' (c :- e) = case q e of 
-  Left (n, a, x, b) -> (n' :. a) : c :- o (V n') b
-    where n' = fr c n
+data C a = [B] :- a
 
-cl s t = go 0 t where
-  go n s'
-   | (s == s') = B n
-   | otherwise = rb go n s'
+infixl 2 :-
 
-cl' x (n :. a : c :- e) = c :- (n' :. a) `x` cl (V n) e
-  where n' = strip n
+f ==< (c :- e) = c :- (f $ c :- e)
+
+l (c :- e) = (c :-) <$> e
+
+ex (c :- e) = e
 
 lk (n' :. a : xs) n
  | n == n'   = a
  | otherwise = lk xs n
 
-typ (_ :. t) = t
-nam (n :. _) = n
+fr c n = if i == 0 then n else n ++ "." ++ show i where 
+  i = length $ filter ((n==) . nam) c
 
-lki ctx n = typ (ctx !! n)
+strip = takeWhile ('.' /=)
 
-tdB e = go [] e where
-  go ctx e = case q e of
-    Left (n, a, x, b) -> (n :. go ctx a) `x` go (n:ctx) b
-    _ -> case e of
-      V n -> maybe (V n) B (elemIndex n ctx)
-      _ -> r' (go ctx) e 
-    
+op' (c :- Binder (n :. a) x b) = 
+  (n' :. a) : c :- (op (F n') b) 
+    where n' = fr c n
 
-fdB e = go [] e where
-  go ctx e = case q e of  
-    Left (n, a, x, b) ->
-      let n' = freshen n ctx in 
-      (n' :. go ctx a) `x` go (n':ctx) b
-    _ -> case e of 
-      B n -> V (ctx !! n)
-      _ -> r' (go ctx) e
-  freshen n ctx
-   | elem n ctx = freshen (tick n) ctx
-   | otherwise  = n
+cl' x (n' :. a : c :- b) =
+  c :- Binder (n :. a) x (cl (F n) b)
+    where n = strip n'
 
-nf e = case e of
-  ((_ :\ b) :@ a) -> nf $ o (nf a) (nf b)
-  _ -> r' nf e
+toNamed (c :- Binder (n :. a) x b) = (n' :. a') `x` b' where
+  n' = fr c n
+  a' = toNamed (c :- a)
+  b' = toNamed (n' :. a' : c :- op (F n') b)
+toNamed (c :- e) = r' (toNamed . (c :-)) e
 
-data Ctx a = [B] :- a deriving(Eq, Ord, Show)
-
-ex (_ :- a) = a
-
-f ==< (c :- e) = c :- (f $ c :- e)
-l (c :- e) = (c :-) <$> e
-
-infixl 2 :-
-
-pts (K x) (K y) = K y
+fromNamed (Binder (n :. a) x b) = 
+  (n' :. fromNamed a) `x` cl (F n) (fromNamed b)
+    where n' = strip n
+fromNamed e = r' fromNamed e
 
 isK (K _) = True
 isK _ = False
 
-tc' = go where 
-  go (c :- e) = case e of 
-    K n -> pure $ K (n+1)
-    V n -> pure $ c `lk` n
+tc' = go where
+  go (c :- e) = case e of
+    K i -> pure $ K (i+1)
+    F n -> pure $ lk c n
     a :@ b -> do
-      (_ :> ta) <- go (c :- a)
+      _ :> ta <- go (c :- a)
       tb <- go (c :- b)
-      pure $ nf $ o b ta
-    (n :. a) :\ b -> do
+      pure $ nf $ op b ta
+    n :. a :\ b -> do
       ta <- go (c :- a)
       guard (isK ta)
-      tb <- l $ go ==< o' (c :- e)
+      tb <- l $ go ==< op' (c :- e)
       pure $ ex $ cl' (:>) tb
-    (_ :. a) :> b -> do 
+    _ :. a :> b -> do 
       ta <- go (c :- a)
-      tb <- go $ o' (c :- e)
+      tb <- go $ op' (c :- e)
       guard (isK ta)
       guard (isK tb)
       pure tb
 
-tc x = tx where Just tx = tc' x
+tc (tc' -> Just a) = a
 
--- xx = tdB $ "a" :. K 0 :\ V "a" :@ V "a"
--- i = tdB $ "a" :. K 0 :\ V "a"
+pts (K i) (K j) = K j
 
-zee = "Z" :. K 0
-
-predicate = "" :. V "Z" :> K 0
-
-eq = "=" :. ("" :. V "Z" :> "" :. V "Z" :> K 0)
-
-eqElim = "eqElim" :. (tdB $ 
-  "P" :. predicate :> 
-  "x" :. V "Z" :>
-  "y" :. V "Z" :> 
-  "x=y" :. (V "=" :@ V "x" :@ V "y") :> 
-  "Px" :. (V "P" :@ V "x") :> 
-  V "P" :@ V "y"
-  )
-
-zero = "0" :. V "Z"
-
-one = "1" :. V "Z"
-
-op = tdB $ "" :. V "Z" :> "" :. V "Z" :> V "Z"
-
-add = "+" :. op
-
-mul = "*" :. op
-
-comm = tdB $ 
-  "op" :. op :\ 
-  "x" :. V "Z" :> 
-  "y" :. V "Z" :> 
-  V "=" 
-  :@ (V "op" :@ V "x" :@ V "y") 
-  :@ (V "op" :@ V "y" :@ V "x")
-
-assoc = tdB $ 
-  "op" :. op :\ 
-  "x" :. V "Z" :> 
-  "y" :. V "Z" :> 
-  "z" :. V "Z" :> 
-  V "=" 
-  :@ (V "op" :@ (V "op" :@ V "x" :@ V "y") :@ V "z") 
-  :@ (V "op" :@ V "x" :@ (V "op" :@ V "y" :@ V "z"))
-
-addComm = "+com" :. (comm :@ V "+")
-
-mulComm = "*com" :. (comm :@ V "*")
-
-addAssoc = "+assoc" :. (assoc :@ V "+")
-
-mulAssoc = "*assoc" :. (assoc :@ V "*")
-
-unit0 = ("unit0" :.) $ tdB $
-  "x" :. V "Z" :>
-  V "=" 
-  :@ (V "+" :@ V "0" :@ V "x")
-  :@ (V "x")
-
-unit1 = ("unit1" :.) $ tdB $ 
-  "x" :. V "Z" :>
-  V "="
-  :@ (V "*" :@ V "1" :@ V "x")
-  :@ (V "x")
-  
-
-dist = ("dist" :.) $
-  "x" :. V "Z" :>
-  "y" :. V "Z" :>
-  "z" :. V "Z" :>
-  V "="
-  :@ (V "*" :@ V "x" :@ (V "+" :@ V "y" :@ V "z"))
-  :@ (V "+" :@ (V "*" :@ V "x" :@ V "z") :@ (V "*" :@ V "x" :@ V "z"))
-
-ring = reverse $ 
-  [ zee
-  , eq
-  , eqElim
-  , zero
-  , one
-  , add
-  , mul
-  , addComm
-  , mulComm
-  , addAssoc
-  , mulAssoc
-  , unit0 
-  , unit1
-  , dist
-  ]
-
-eqTrans = tdB $ 
-  "x" :. V "Z" :\
-  "y" :. V "Z" :\
-  "z" :. V "Z" :\
-  "x=y" :. (V "=" :@ V "x" :@ V "y") :\
-  "y=z" :. (V "=" :@ V "y" :@ V "z") :\
-  V "eqElim" 
-  :@ ("q" :. V "Z" :\ (V "=" :@ V "x" :@ V "q"))
-  :@ V "y"
-  :@ V "z"
-  :@ V "y=z" 
-  :@ V "x=y"
-
-class MSub a where
-  msub :: N -> E -> a -> a
+----
 
 
-instance MSub B where
-  msub n t (n' :. a) = n' :. msub n t a
-
-instance MSub E where
-  msub n t e = case e of 
-    M n' | n' == n -> t
-    a :@ b -> msub n t a :@ msub n t b
-    a :> b -> msub n t a :> msub n t b
-    a :\ b -> msub n t a :\ msub n t b
-    _ -> e
-
-instance MSub a => MSub [a] where
-  msub n t a = map (msub n t) a
-
-instance MSub a => MSub (Ctx a) where
-  msub n t (c :- e) = msub n t c :- msub n t e
-
-data Eqn = Eqn E E deriving(Eq, Ord, Show)
-
-instance MSub Eqn where
-  msub n t (Eqn a b) = Eqn (msub n t a) (msub n t b)
-
-data Problem = Problem E [Ctx B] [Eqn] deriving(Eq, Ord, Show)
-
-instance MSub Problem where
-  msub n t (Problem a b c) = Problem (msub n t a) (msub n t b) (msub n t c)
-
-data Delta = Delta [(N, E)] [Ctx B] [Eqn]
-
-headNF e = go (nf e) [] where
-  go e args = case e of
-    a :@ b -> go a (b : args)
-    _ -> (e, args)
-
-applyDelta (Delta subs exs' eqns') (Problem e exs eqns)  = 
-  foldr (uncurry msub) (Problem e (exs ++ exs') (eqns ++ eqns'))
-
-splitEqn (Eqn a b) = 
-  let (ha, as) = headNF a
-      (hb, bs) = headNF b
-  in case (ha, hb) of
-    (V _, V _) -> concatMap splitEqn $ zipWith Eqn as bs
-    (_ :> a', _ :> b') -> splitEqn $ Eqn a' b'
-    (_ :\ a', _ :\ b') -> splitEqn $ Eqn a' b' 
-
-bad eq = case eq of
-  Eqn (V a) (V b) | a /= b -> True
-  Eqn (K a) (K b) | a /= b -> True
-
-resolveK (c :- n :. K m) | m > 0 = ([(n, K (m-1))], [])
-
-openLam (c :- n :. (b :> e)) = ([(n, b' :\ M n')], [ b' : c :- n' :. e' ])
-  where b' : _ :- e' = o' (c :- b :> e)
-        n' = "-" ++ n
--- openLam (c :- n :. (b :> e)) = ([(n, b :\ M n')], [ b : c :- n' :. e ])
---   where n' = fr c n
-openLam (c :- e) = ([], [c :- e])
-
-args q = case q of
-  y :. qa :> q' -> (y :. qa) : args q'
-  _ -> []
-
-app f ((c :- y :. _) : ys) = app (f :@ V y) ys
-app f [] = f
-
-r0split (c :- n :. p) (w :. q) = ([(n, app (V w) ys)], ys) where
-  ys = map (c :-) $ freshenArgs $ args q 
-  freshenArgs (y :. q : yqs) = y' :. q : freshenArgs yqs
-    where y' = fr c y ++ ":" ++ show (length yqs)
-  freshenArgs [] = []
-
-stdFT = applyFT openLam . applyFT resolveK
-
-applyFT ft (Problem e exs eqns) = foldr (uncurry msub) (Problem e (concat exs') eqns) subs
-  where (subs, exs') = mapM ft exs
-
-basic e = Problem (K 0) [[] :- e] []
-
-mID = "Ma" :. ("A" :. K 0 :> "a" :. V "A" :> V "A")
-
-stabilize (x : y : ys) | x == y = x
-stabilize (x : xs) = stabilize xs
-
-stripCtx (Problem _ exs _) = map (\(c :- e) -> e) exs
-
-
-
+sq = fromNamed $
+  "A" :. P :\ 
+  "f" :. ("x" :. F "A" :> "y" :. F "A" :> F "A") :\
+  F "f" :@ F "x" :@ F "x"
