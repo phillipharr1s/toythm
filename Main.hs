@@ -105,7 +105,7 @@ cl t = go 0 where
 
 nf = \case
   (nf -> a) :@ (nf -> b) 
-   | Binder _ _ f <- a -> nf $ op b f
+   | _ :\ f <- a -> nf $ op b f
    | otherwise -> a :@ b
   _ :\ (f :@ B 0) | op (K 0) f == f -> f
   e -> r' nf e
@@ -121,6 +121,9 @@ stripNames = \case
   e -> r' stripNames e
 
 data C a = [B] :- a deriving(Eq, Ord, Show)
+
+instance Functor C where
+  fmap f (c :- e) = c :- f e
 
 infixl 2 :-
 
@@ -222,7 +225,7 @@ data Problem = Problem E [C B] [Eqn] deriving(Eq, Ord, Show)
 instance MSub Problem where
   msub n t (Problem a b c) = Problem (msub n t a) (msub n t b) (msub n t c)
 
-data Delta = Delta [(N, E)] [C B] [Eqn]
+data Delta = Delta [(N, E)] [C B] [Eqn] deriving(Eq, Ord, Show)
 
 headNF e = go (nf e) [] where
   go e args = case e of
@@ -230,33 +233,53 @@ headNF e = go (nf e) [] where
     _ -> (e, args)
 
 applyDelta (Delta subs exs' eqns') (Problem e exs eqns)  = 
-  foldr (uncurry msub) (Problem e (exs ++ exs') (eqns ++ eqns'))
+  foldr 
+    (uncurry msub) 
+    (Problem e (f $ exs ++ exs') (eqns ++ eqns')) subs
+    where substituted = map fst subs
+          f = filter (\(_ :- n :. _) -> not $ elem n substituted)
 
-splitEqn (Eqn a b) = 
-  let (ha, as) = headNF a
-      (hb, bs) = headNF b
-  in case (ha, hb) of
-    (F _, F _) -> concatMap splitEqn $ zipWith Eqn as bs
-    (_ :> a', _ :> b') -> splitEqn $ Eqn a' b'
-    (_ :\ a', _ :\ b') -> splitEqn $ Eqn a' b' 
+-- splitEqn (Eqn a b) = 
+--   let (ha, as) = headNF a
+--       (hb, bs) = headNF b
+--   in case (ha, hb) of
+--     (F _, F _) -> concatMap splitEqn $ zipWith Eqn as bs
+--     (_ :> a', _ :> b') -> splitEqn $ Eqn a' b'
+--     (_ :\ a', _ :\ b') -> splitEqn $ Eqn a' b' 
 
 bad eq = case eq of
-  Eqn (F a) (F b) | a /= b -> True
+  Eqn (as :>> (F _ :@@ _)) (bs :>> (F _ :@@ _)) | length as /= length bs -> True
+  Eqn (F a :@@ as) (F b :@@ bs) 
+    | a /= b -> True
+    | length as /= length bs -> True
   Eqn (K a) (K b) | a /= b -> True
+  Eqn (K a) (K b) | a == b -> False
+  Eqn (K _) _ -> True
+  Eqn _ (K _) -> True
+  _ -> False
+
+splitEqn = \case
+  Eqn a b | a == b -> []
+  Eqn (F a :@@ as) (F b :@@ bs) 
+    | length as == length bs , a == b 
+        -> splitEqn =<< zipWith (Eqn) (F a : as) (F b : bs )
+  Eqn a b -> [Eqn a b]
 
 resolveK = \case
   c :- n :. K m | m > 0 -> Delta [(n, K (m-1))] [] []
   _ -> Delta [] [] []
 
-popLam (c :- n :. (n' :. a :> t)) = 
+popLam exs (c :- m :. (n' :. a :> t)) = 
   Delta
-    []
-    []
+    [(m, n'' :. a :\ M m' )]
+    [n'' :. a : c :- m' :. t']
     []
   where
-    
+    n'' :. _ : _ :- t' = op' (exs ++ c :- (n' :. a :> t))
+    m' = fr (exs ++ c) m
+popLam _ _ = Delta [] [] []
 
-r0split (c :- n :. t) w = 
+r0split exs (c :- n :. t) w = 
   Delta 
     [(n, F w :@@ (M . nam <$> bindings))]
     ((c :-) <$> bindings )
@@ -264,16 +287,25 @@ r0split (c :- n :. t) w =
   where 
     tw = lk c w
     go acc q@(_ :- n :. a :> tws) = 
-      let q'@(n' :. a : _ :- tws') = op' q
+      let q'@(n' :. a : _ :- tws') = (op (M n') . cl (F n')) <$> op' q
       in go (n' :. a : acc) q'
     go acc tw = (acc, tw)
-    (bindings, _ :- ret) = go [] (c :- tw)
+    (bindings, _ :- ret) = go [] (exs ++ c :- tw)
+-- Problem ("FALSE" :. ("A" :. K 0 :> F "A") :\ ("B" :. K 0 :\ M "EXPLOSION.1.1")) [["B" :. K 0,"FALSE" :. ("A" :. K 0 :> F "A")] :- "EXPLOSION.1.1" :. F "B"] []
+tryR0split p@(Problem e exs eqns) = do
+  existential@(c :- _) <- exs
+  (w :. _) <- c
+  tryDelta $ applyDelta (r0split (map ex exs) existential w) p
 
-applyFT ft (Problem e exs eqns) = 
-  foldr (uncurry msub) (Problem e (concat exs') eqns) subs
-    where (subs, exs') = mapM ft exs
+tryPopLam p@(Problem e exs eqns) = do
+  existential <- exs
+  tryDelta $ applyDelta (popLam (map ex exs) existential) p
 
-basic e = Problem (K 0) [[] :- e] []
+tryDelta p@(Problem e exs eqns)
+ | any bad eqns = []
+ | otherwise = [p]
+
+basic e@(n :. _) = Problem (M n) [theory :- e] []
 
 mID = "Ma" :. ("A" :. K 0 :> "a" :. F "A" :> F "A")
 
@@ -282,109 +314,75 @@ stabilize (x : xs) = stabilize xs
 
 stripCtx (Problem _ exs _) = map (\(c :- e) -> e) exs
 
+optional f x = x : f x
 
+wash = 
+    nub
+  . (tryDelta =<<)
+  . map (\(Problem a b c) -> Problem a b (stabilize $ iterate (splitEqn =<<) c))
+  . (tryR0split =<<) 
+  . (tryPopLam =<<)
 
-zee = "Z" :. K 0
+letsgo t = (iterate wash [basic t]) !! 5
+-- nub $ filter finished $ 
 
-predicate = "" :. F "Z" :> K 0
+finished (Problem _ [] []) = True
+finished (Problem _ _  _) = False
 
-eq = "=" :. ("" :. F "Z" :> "" :. F "Z" :> K 0)
+aT = "A" :. (nf $ fromNamed $ K 0)
 
-eqElim = "eqElim" :. (fromNamed $ 
-  "P" :. predicate :> 
-  "x" :. F "Z" :>
-  "y" :. F "Z" :> 
-  "x=y" :. (F "=" :@ F "x" :@ F "y") :> 
-  "Px" :. (F "P" :@ F "x") :> 
-  F "P" :@ F "y"
+eqT = "=" :. (nf $ fromNamed $ 
+  "x" :. F "A" :> "y" :. F "A" :> K 0
   )
 
-zero = "0" :. F "Z"
+refl = "refl" :. (nf $ fromNamed $ 
+  "x" :. F "A" :> F "=" :@ F "x" :@ F "x"
+  )
 
-one = "1" :. F "Z"
+elim = "elim" :. (nf $ fromNamed $
+  "P" :. (
+    "x" :. F "A" :> 
+    "y" :. F "A" :>
+    "x=y" :. (F "=" :@ F "x" :@ F "y") :> 
+    K 0
+  ) :> 
+  "Prefl" :. (
+    "x" :. F "A" :>
+    F "P" :@ (F "refl" :@ F "x")
+  ) :> 
+  "x" :. F "A" :> 
+  "y" :. F "A" :> 
+  "x=y" :. (F "=" :@ F "x" :@ F "y") :>
+  F "P" :@ F "x=y"
+  )
 
-opA = fromNamed $ "" :. F "Z" :> "" :. F "Z" :> F "Z"
+theory = ["P" :. K 0, eqT, refl, elim] -- [elim, refl, eqT, aT]
 
-add = "+" :. opA
+false = "Q" :. K 0 :> F "Q"
 
-mul = "*" :. opA
+notT p = p `implies` false
 
-comm = fromNamed $ 
-  "op" :. opA :\ 
-  "x" :. F "Z" :> 
-  "y" :. F "Z" :> 
-  F "=" 
-  :@ (F "op" :@ F "x" :@ F "y") 
-  :@ (F "op" :@ F "y" :@ F "x")
+implies p q = "_" :. p :> q
 
-assoc = fromNamed $ 
-  "op" :. opA :\ 
-  "x" :. F "Z" :> 
-  "y" :. F "Z" :> 
-  "z" :. F "Z" :> 
-  F "=" 
-  :@ (F "op" :@ (F "op" :@ F "x" :@ F "y") :@ F "z") 
-  :@ (F "op" :@ F "x" :@ (F "op" :@ F "y" :@ F "z"))
-
-addComm = "+com" :. (comm :@ F "+")
-
-mulComm = "*com" :. (comm :@ F "*")
-
-addAssoc = "+assoc" :. (assoc :@ F "+")
-
-mulAssoc = "*assoc" :. (assoc :@ F "*")
-
-unit0 = ("unit0" :.) $ fromNamed $
-  "x" :. F "Z" :>
-  F "=" 
-  :@ (F "+" :@ F "0" :@ F "x")
-  :@ (F "x")
-
-unit1 = ("unit1" :.) $ fromNamed $ 
-  "x" :. F "Z" :>
-  F "="
-  :@ (F "*" :@ F "1" :@ F "x")
-  :@ (F "x")
-  
-
-dist = ("dist" :.) $
-  "x" :. F "Z" :>
-  "y" :. F "Z" :>
-  "z" :. F "Z" :>
-  F "="
-  :@ (F "*" :@ F "x" :@ (F "+" :@ F "y" :@ F "z"))
-  :@ (F "+" :@ (F "*" :@ F "x" :@ F "z") :@ (F "*" :@ F "x" :@ F "z"))
-
-ring = reverse $ 
-  [ zee
-  , eq
-  , eqElim
-  , zero
-  , one
-  , add
-  , mul
-  , addComm
-  , mulComm
-  , addAssoc
-  , mulAssoc
-  , unit0 
-  , unit1
-  , dist
-  ]
+dni = "DNI" :. (implies (F "P") (notT $ notT $ F "P"))
 
 eqTrans = fromNamed $ 
-  "x" :. F "Z" :\
-  "y" :. F "Z" :\
-  "z" :. F "Z" :\
+  "x" :. F "P" :\
+  "y" :. F "P" :\
+  "z" :. F "P" :\
   "x=y" :. (F "=" :@ F "x" :@ F "y") :\
   "y=z" :. (F "=" :@ F "y" :@ F "z") :\
   F "eqElim" 
-  :@ ("q" :. F "Z" :\ (F "=" :@ F "x" :@ F "q"))
+  :@ ("q" :. F "P" :\ (F "=" :@ F "x" :@ F "q"))
   :@ F "y"
   :@ F "z"
   :@ F "y=z" 
   :@ F "x=y"
 
+pp :: Show x => [x] -> IO ()
+pp = mapM_ print
+
+ff = filter finished
 
 ----
 
