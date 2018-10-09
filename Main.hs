@@ -220,12 +220,12 @@ data Eqn = Eqn E E deriving(Eq, Ord, Show)
 instance MSub Eqn where
   msub n t (Eqn a b) = Eqn (msub n t a) (msub n t b)
 
-data Problem = Problem E [C B] [Eqn] deriving(Eq, Ord, Show)
+data Problem = Problem E [C B] [C Eqn] deriving(Eq, Ord, Show)
 
 instance MSub Problem where
   msub n t (Problem a b c) = Problem (msub n t a) (msub n t b) (msub n t c)
 
-data Delta = Delta [(N, E)] [C B] [Eqn] deriving(Eq, Ord, Show)
+data Delta = Delta [(N, E)] [C B] [C Eqn] deriving(Eq, Ord, Show)
 
 headNF e = go (nf e) [] where
   go e args = case e of
@@ -247,23 +247,33 @@ applyDelta (Delta subs exs' eqns') (Problem e exs eqns)  =
 --     (_ :> a', _ :> b') -> splitEqn $ Eqn a' b'
 --     (_ :\ a', _ :\ b') -> splitEqn $ Eqn a' b' 
 
-bad eq = case eq of
-  Eqn (as :>> (F _ :@@ _)) (bs :>> (F _ :@@ _)) | length as /= length bs -> True
+bad (c :- eq) = case eq of
   Eqn (F a :@@ as) (F b :@@ bs) 
     | a /= b -> True
-    | length as /= length bs -> True
-  Eqn (K a) (K b) | a /= b -> True
-  Eqn (K a) (K b) | a == b -> False
+    | length as /= length bs -> trace "La/=Lb" $ True
+  Eqn (K a) (K b) | a /= b -> trace "K=" $ True
+  Eqn (K a) (K b) | a == b -> trace "K/=" $ False
   Eqn (K _) _ -> True
   Eqn _ (K _) -> True
+  Eqn (Binder _ _ _) (Binder _ _ _) -> trace "Binder" $ traceShow eq $ False
+  -- Eqn (_ :> _) _ -> trace "BOO" $ traceShow eq $ False
+  -- Eqn (_ :\ _) _ -> trace "BOO" $ traceShow eq $ False
+  -- Eqn _ (_ :> _) -> trace "BOO" $ traceShow eq $ False
+  -- Eqn _ (_ :\ _) -> trace "BOO" $ traceShow eq $ False
   _ -> False
 
 splitEqn = \case
-  Eqn a b | a == b -> []
-  Eqn (F a :@@ as) (F b :@@ bs) 
+  c :- Eqn a b | a == b -> []
+  c :- Eqn (F a :@@ as) (F b :@@ bs) 
     | length as == length bs , a == b 
-        -> splitEqn =<< zipWith (Eqn) (F a : as) (F b : bs )
-  Eqn a b -> [Eqn a b]
+        -> (splitEqn =<<) $ 
+           map (c :-) $ 
+           zipWith Eqn (F a : as) (F b : bs)
+  c :- Eqn a@(Binder _ x1 as) b@(Binder _ x2 bs)
+    -> let c'@(n :. at : _) :- as' = op' (c :- a)
+           bs' = cl (F n) bs
+       in [c :- Eqn a b, c' :- Eqn as' bs']
+  eqn -> [eqn]
 
 resolveK = \case
   c :- n :. K m | m > 0 -> Delta [(n, K (m-1))] [] []
@@ -283,7 +293,7 @@ r0split exs (c :- n :. t) w =
   Delta 
     [(n, F w :@@ (M . nam <$> bindings))]
     ((c :-) <$> bindings )
-    [Eqn ret t]
+    [bindings ++ c :- Eqn ret t]
   where 
     tw = lk c w
     go acc q@(_ :- n :. a :> tws) = 
@@ -358,7 +368,7 @@ elim = "elim" :. (nf $ fromNamed $
 
 theory = ["P" :. K 0, eqT, refl, elim] -- [elim, refl, eqT, aT]
 
-false = "Q" :. K 0 :> F "Q"
+false = nf $ fromNamed $ "Q" :. K 0 :> F "Q"
 
 notT p = p `implies` false
 
