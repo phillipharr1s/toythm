@@ -215,7 +215,7 @@ instance MSub a => MSub [a] where
 instance MSub a => MSub (C a) where
   msub n t (c :- e) = msub n t c :- msub n t e
 
-data Eqn = Eqn E E deriving(Eq, Ord, Show)
+data Eqn = Eqn E E | Bot deriving(Eq, Ord, Show)
 
 instance MSub Eqn where
   msub n t (Eqn a b) = Eqn (msub n t a) (msub n t b)
@@ -239,27 +239,33 @@ applyDelta (Delta subs exs' eqns') (Problem e exs eqns)  =
     where substituted = map fst subs
           f = filter (\(_ :- n :. _) -> not $ elem n substituted)
 
--- splitEqn (Eqn a b) = 
---   let (ha, as) = headNF a
---       (hb, bs) = headNF b
---   in case (ha, hb) of
---     (F _, F _) -> concatMap splitEqn $ zipWith Eqn as bs
---     (_ :> a', _ :> b') -> splitEqn $ Eqn a' b'
---     (_ :\ a', _ :\ b') -> splitEqn $ Eqn a' b' 
+-- processEq (c :- eq) = case eq of
+--   Eqn a b | a == b -> []
+--   Eqn (K _) _ -> [Bot]
+--   Eqn _ (K _) -> [Bot]
+--   Eqn (_ :> _) (_ :\ _) -> [Bot]
+--   Eqn (_ :\ _) (_ :> _) -> [Bot]
+
 
 bad (c :- eq) = case eq of
-  Eqn (F a :@@ as) (F b :@@ bs) 
-    | a /= b -> True
-    | length as /= length bs -> trace "La/=Lb" $ True
-  Eqn (K a) (K b) | a /= b -> trace "K=" $ True
-  Eqn (K a) (K b) | a == b -> trace "K/=" $ False
+  Eqn (K a) (K b) | a == b -> False
   Eqn (K _) _ -> True
   Eqn _ (K _) -> True
-  Eqn (Binder _ _ _) (Binder _ _ _) -> trace "Binder" $ traceShow eq $ False
-  -- Eqn (_ :> _) _ -> trace "BOO" $ traceShow eq $ False
-  -- Eqn (_ :\ _) _ -> trace "BOO" $ traceShow eq $ False
-  -- Eqn _ (_ :> _) -> trace "BOO" $ traceShow eq $ False
-  -- Eqn _ (_ :\ _) -> trace "BOO" $ traceShow eq $ False
+  Eqn (F _ :@@ _) (Binder _ _ _) -> True
+  Eqn (Binder _ _ _) (F _ :@@ _) -> True
+  Eqn (F a :@@ as) (F b :@@ bs) 
+    | a /= b -> True
+    | length as /= length bs -> True
+  Eqn (B i :@@ as) (B j :@@ bs)
+   | i /= j -> True
+   | length as /= length bs -> True
+   | otherwise -> or $ map (bad . (c :-)) $ zipWith Eqn as bs
+  Eqn (_ :> _) (_ :\ _) -> True
+  Eqn (_ :\ _) (_ :> _) -> True
+  Eqn a@(Binder _ _ _) b@(Binder _ _ _) -> 
+    let Binder (_ :. at) _ a' = fromNamed a 
+        Binder (_ :. bt) _ b' = fromNamed b
+    in bad (c :- Eqn a' b') || bad (c :- Eqn at bt)
   _ -> False
 
 splitEqn = \case
@@ -301,7 +307,7 @@ r0split exs (c :- n :. t) w =
       in go (n' :. a : acc) q'
     go acc tw = (acc, tw)
     (bindings, _ :- ret) = go [] (exs ++ c :- tw)
--- Problem ("FALSE" :. ("A" :. K 0 :> F "A") :\ ("B" :. K 0 :\ M "EXPLOSION.1.1")) [["B" :. K 0,"FALSE" :. ("A" :. K 0 :> F "A")] :- "EXPLOSION.1.1" :. F "B"] []
+
 tryR0split p@(Problem e exs eqns) = do
   existential@(c :- _) <- exs
   (w :. _) <- c
