@@ -3,6 +3,9 @@
 {-# LANGUAGE PatternGuards #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE DeriveFunctor #-}
+{-# LANGUAGE DeriveFoldable #-}
+{-# LANGUAGE DeriveTraversable #-}
 
 
 module Main where
@@ -21,21 +24,26 @@ type N = String
 type I = Int
 
 data B = N :. E
-  deriving (Eq, Ord, Show)
+  deriving (Ord, Show)
 
 infixl 6 :.
+
+instance Eq B where
+  (_ :. a) == (_ :. b) = 
+    a == b
 
 nam (n :. e) = n
 typ (n :. e) = e
 
 data E
- = B I
+ = M N
+ | K I
+ | B I
  | F N
  | E :@ E
  | B :\ E
  | B :> E
- | K I
- | M N
+
  deriving (Eq, Ord, Show)
 
 infixl 4 :@
@@ -84,6 +92,14 @@ pattern (:>>) :: [B] -> E -> E
 pattern as :>> b <- (splitPi -> (b, as))
   where as :>> b = foldr (:>) b as
 
+pattern a :@: b = a :@ b
+
+pattern a :\: b <- _ :. a :\ b
+  where a :\: b = "" :. a :\ b
+
+pattern a :>: b <- _ :. a :> b
+  where a :>: b = "" :. a :> b
+
 r f g = \case
   Binder (n :. a) x b -> (n :. f a) `x` g b
   a :@ b -> f a :@ f b
@@ -105,7 +121,7 @@ cl t = go 0 where
 
 nf = \case
   (nf -> a) :@ (nf -> b) 
-   | _ :\ f <- a -> nf $ op b f
+   | Binder _ _ f <- a -> nf $ op b f
    | otherwise -> a :@ b
   _ :\ (f :@ B 0) | op (K 0) f == f -> f
   e -> r' nf e
@@ -114,16 +130,9 @@ class Equiv a where
   (===) :: a -> a -> Bool
 
 instance Equiv E where
-  x === y = stripNames (nf x) == stripNames (nf y)
+  x === y = (nf x) == (nf y)
 
-stripNames = \case 
-  Binder (n :. a) x b -> ("" :. stripNames a) `x` stripNames b
-  e -> r' stripNames e
-
-data C a = [B] :- a deriving(Eq, Ord, Show)
-
-instance Functor C where
-  fmap f (c :- e) = c :- f e
+data C a = [B] :- a deriving(Eq, Ord, Functor, Foldable, Traversable, Show)
 
 infixl 2 :-
 
@@ -137,7 +146,7 @@ lk (n' :. a : xs) n
  | n == n'   = a
  | otherwise = lk xs n
 
-fr c n = if i == 0 then n else n ++ "." ++ show i where 
+fr c n = if i == 0 then n else n ++ "'" ++ show i where 
   i = length $ filter ((n==) . nam) c
 
 strip = takeWhile ('.' /=)
@@ -150,11 +159,27 @@ cl' x (n' :. a : c :- b) =
   c :- Binder (n :. a) x (cl (F n) b)
     where n = strip n'
 
-toNamed (c :- Binder (n :. a) x b) = (n' :. a') `x` b' where
-  n' = fr c n
-  a' = toNamed (c :- a)
-  b' = toNamed (n' :. a' : c :- op (F n') b)
-toNamed (c :- e) = r' (toNamed . (c :-)) e
+opApp e@(c :- a :@: b) = Just (c :- a, c :- b)
+opApp _ = Nothing
+
+opLam e@(c :- n :. a :\ b) = Just (c :- a, op' e)
+opLam _ = Nothing
+
+opPi e@(c :- n :. a :> b) = Just (c :- a, op' e)
+opPi _ = Nothing
+
+pattern a :@! b <- (opApp -> Just (a, b))
+
+pattern a :\! b <- (opLam -> Just (a, b))
+
+pattern a :>! b <- (opLam -> Just (a, b))
+
+toNamed e = go [] e where
+  go c (Binder (n :. a) x b) = (n' :. a') `x` b' where
+    n' = fr c n
+    a' = go c a
+    b' = go (n' :. a : c) (op (F n') b)
+  go c e = r' (go c) e
 
 fromNamed (Binder (n :. a) x b) = 
   (n' :. fromNamed a) `x` cl (F n) (fromNamed b)
@@ -164,39 +189,35 @@ fromNamed e = r' fromNamed e
 isK (K _) = True
 isK _ = False
 
+pts (K i) (K j) = K j
+
 tc' = go where
-  go (c :- e) = case e of
-    K i -> pure $ K (i+1)
-    F n -> pure $ lk c n
-    a :@ b -> do
-      (_ :. tb') :> ta <- go (c :- a)
-      tb <- go (c :- b)
+  go = \case
+    c :- K i -> pure $ K (i+1)
+    c :- F n -> pure $ lk c n
+    a :@! b -> do
+      ta@(tb' :>: _) <- go a
+      tb <- go b
       guard (tb === tb')
-      pure $ nf $ op b ta
-    n :. a :\ b -> do
-      ta <- go (c :- a)
+      pure $ nf $ ta :@ ex b
+    a :\! b -> do
+      ta <- go a
       guard (isK ta)
-      tb <- l $ go ==< op' (c :- e)
+      tb <- l $ go ==< b
       pure $ ex $ cl' (:>) tb
-    _ :. a :> b -> do 
-      ta <- go (c :- a)
-      tb <- go $ op' (c :- e)
+    a :>! b -> do 
+      ta <- go a
+      tb <- go b
       guard (isK ta)
       guard (isK tb)
       pure $ pts ta tb
 
 tc (tc' -> Just a) = a
 
-pts (K i) (K j) = K j
-
-data Constraint
- = E := E
- | [B] :? B
 
 
 class MSub a where
   msub :: N -> E -> a -> a
-
 
 instance MSub B where
   msub n t (n' :. a) = n' :. msub n t a
@@ -205,8 +226,7 @@ instance MSub E where
   msub n t e = case e of 
     M n' | n' == n -> t
     a :@ b -> msub n t a :@ msub n t b
-    a :> b -> msub n t a :> msub n t b
-    a :\ b -> msub n t a :\ msub n t b
+    Binder a x b -> msub n t a `x` msub n t b
     _ -> e
 
 instance MSub a => MSub [a] where
@@ -215,135 +235,163 @@ instance MSub a => MSub [a] where
 instance MSub a => MSub (C a) where
   msub n t (c :- e) = msub n t c :- msub n t e
 
-data Eqn = Eqn E E | Bot deriving(Eq, Ord, Show)
+data Eqn = E := E | Bot deriving(Eq, Ord, Show)
+
+infixl 2 :=
+
+orient (a := b) = a' := b'
+  where [a', b'] = sort [a, b]
+
+split eq = case orient eq of 
+  F a :@@ as := F b :@@ bs 
+   | a == b && length as == length bs 
+      -> split =<< zipWith (:=) as bs
+  B a :@@ as := B b :@@ bs
+   | a == b && length as == length bs 
+      -> split =<< zipWith (:=) as bs
+  a :\: b := a' :\: b' -> split =<< [a := a', b := b']
+  a :>: b := a' :>: b' -> split =<< [a := a', b := b']
+  K i := K j | i == j -> []
+  eq@(M _ :@@ _ := _) -> [eq]
+  eq -> [Bot] -- trace "BAD:" $ traceShow eq $ [Bot]
+
+processEqs = (split =<<) . map orient
 
 instance MSub Eqn where
-  msub n t (Eqn a b) = Eqn (msub n t a) (msub n t b)
+  msub n t (a := b) = msub n t a := msub n t b
 
-data Problem = Problem E [C B] [C Eqn] deriving(Eq, Ord, Show)
+data Problem = Problem I E [C B] [Eqn] deriving(Eq, Ord, Show)
 
 instance MSub Problem where
-  msub n t (Problem a b c) = Problem (msub n t a) (msub n t b) (msub n t c)
+  msub n t (Problem i a b c) = Problem i (msub n t a) (msub n t b) (msub n t c)
 
-data Delta = Delta [(N, E)] [C B] [C Eqn] deriving(Eq, Ord, Show)
+testP = Problem 0 T [] [B 0 := B 0]
 
-headNF e = go (nf e) [] where
-  go e args = case e of
-    a :@ b -> go a (b : args)
-    _ -> (e, args)
+data Delta = Delta I [(N, E)] [C B] [Eqn] deriving(Eq, Ord, Show)
 
-applyDelta (Delta subs exs' eqns') (Problem e exs eqns)  = 
+applyDelta (Delta j subs goals' eqns') (Problem i term goals eqns)  = 
   foldr 
     (uncurry msub) 
-    (Problem e (f $ exs ++ exs') (eqns ++ eqns')) subs
+    (Problem (i+j) term (f $ goals' ++ goals) (eqns ++ eqns')) subs
     where substituted = map fst subs
           f = filter (\(_ :- n :. _) -> not $ elem n substituted)
 
--- processEq (c :- eq) = case eq of
---   Eqn a b | a == b -> []
---   Eqn (K _) _ -> [Bot]
---   Eqn _ (K _) -> [Bot]
---   Eqn (_ :> _) (_ :\ _) -> [Bot]
---   Eqn (_ :\ _) (_ :> _) -> [Bot]
+popLam (m' : fresh) (c :- m :. (n :. a :> b)) =
+  Just $ Delta 1
+  [(m, n :. a :\ M m')] 
+  [n :. a : c :- m' :. b]
+  []
+popLam _ _ = Nothing
 
+freshMetaVars (Problem i _ goals _) = [ "M" ++ show j | j <- [i..] ]
 
-bad (c :- eq) = case eq of
-  Eqn (K a) (K b) | a == b -> False
-  Eqn (K _) _ -> True
-  Eqn _ (K _) -> True
-  Eqn (F _ :@@ _) (Binder _ _ _) -> True
-  Eqn (Binder _ _ _) (F _ :@@ _) -> True
-  Eqn (F a :@@ as) (F b :@@ bs) 
-    | a /= b -> True
-    | length as /= length bs -> True
-  Eqn (B i :@@ as) (B j :@@ bs)
-   | i /= j -> True
-   | length as /= length bs -> True
-   | otherwise -> or $ map (bad . (c :-)) $ zipWith Eqn as bs
-  Eqn (_ :> _) (_ :\ _) -> True
-  Eqn (_ :\ _) (_ :> _) -> True
-  Eqn a@(Binder _ _ _) b@(Binder _ _ _) -> 
-    let Binder (_ :. at) _ a' = fromNamed a 
-        Binder (_ :. bt) _ b' = fromNamed b
-    in bad (c :- Eqn a' b') || bad (c :- Eqn at bt)
-  _ -> False
+tryPopLam p@(Problem i term goals eqns) = 
+  fromMaybe p $ msum $ map (go p) goals
+    where 
+      go p goal = 
+        (\d -> applyDelta d p) <$> popLam (freshMetaVars p) goal
 
-splitEqn = \case
-  c :- Eqn a b | a == b -> []
-  c :- Eqn (F a :@@ as) (F b :@@ bs) 
-    | length as == length bs , a == b 
-        -> (splitEqn =<<) $ 
-           map (c :-) $ 
-           zipWith Eqn (F a : as) (F b : bs)
-  c :- Eqn a@(Binder _ x1 as) b@(Binder _ x2 bs)
-    -> let c'@(n :. at : _) :- as' = op' (c :- a)
-           bs' = cl (F n) bs
-       in [c :- Eqn a b, c' :- Eqn as' bs']
-  eqn -> [eqn]
+refute p@(Problem i term goals eqs)
+  | any (== Bot) eqs' = []
+  | otherwise = [Problem i term goals eqs']
+  where eqs' = processEqs eqs
 
-resolveK = \case
-  c :- n :. K m | m > 0 -> Delta [(n, K (m-1))] [] []
-  _ -> Delta [] [] []
+settle = stabilize . iterate tryPopLam
 
-popLam exs (c :- m :. (n' :. a :> t)) = 
+stabilize (x : y : ys) 
+ | x == y = x
+ | otherwise = stabilize (y : ys)
+
+step theory = (tryR0split theory . settle =<<)
+
+basic theory e@(n :. _) = Problem 0 (M n) [theory :- e] []
+
+stepN theory n p = iterate (step theory) p !! n
+
+numGoals (Problem _ _ goals _) = length goals
+
+tryR0split c p@(Problem i e goals eqns) = do
+  goal@(c' :- _) <- goals
+  sym <- (F . nam <$> c) ++ (B <$> [0..length c'-1])
+  pure $ applyDelta (r0split c (freshMetaVars p) goal sym) p
+
+r0split c freshMetaVars (c' :- n :. t) sym =
   Delta
-    [(m, n'' :. a :\ M m' )]
-    [n'' :. a : c :- m' :. t']
-    []
+    (length newVars)
+    [(n, sym :@@ (M <$> newVars))]
+    newGoals -- [c' :- var :. tv | (_ :. tv : c'', var) <- zip (tail $ inits qs) newVars]
+    [ret := t]
   where
-    n'' :. _ : _ :- t' = op' (exs ++ c :- (n' :. a :> t))
-    m' = fr (exs ++ c) m
-popLam _ _ = Delta [] [] []
+    tw@(qs :>> q) = case sym of 
+      F w -> lk c w
+      B i -> typ (c' !! i)
+    ret = nf $ tw :@@ (M <$> newVars)
+    newVars = take (length qs) freshMetaVars
+    newGoals = [c' :- var :. foldr op tv deps | (_ :. tv, var) <- zip qs newVars, deps <- inits (M <$> newVars) ]
 
-r0split exs (c :- n :. t) w = 
-  Delta 
-    [(n, F w :@@ (M . nam <$> bindings))]
-    ((c :-) <$> bindings )
-    [bindings ++ c :- Eqn ret t]
-  where 
-    tw = lk c w
-    go acc q@(_ :- n :. a :> tws) = 
-      let q'@(n' :. a : _ :- tws') = (op (M n') . cl (F n')) <$> op' q
-      in go (n' :. a : acc) q'
-    go acc tw = (acc, tw)
-    (bindings, _ :- ret) = go [] (exs ++ c :- tw)
+finished (Problem _ _ [] _) = True
+finished _ = False
 
-tryR0split p@(Problem e exs eqns) = do
-  existential@(c :- _) <- exs
-  (w :. _) <- c
-  tryDelta $ applyDelta (r0split (map ex exs) existential w) p
+showP (Problem _ e _ _) = pretty $ toNamed e
 
-tryPopLam p@(Problem e exs eqns) = do
-  existential <- exs
-  tryDelta $ applyDelta (popLam (map ex exs) existential) p
+p :: [Int]
+p = do 
+  1 <- [2]
+  return 3
 
-tryDelta p@(Problem e exs eqns)
- | any bad eqns = []
- | otherwise = [p]
+q :: Maybe Int
+q = do
+  1 <- Just 2
+  return 3
 
-basic e@(n :. _) = Problem (M n) [theory :- e] []
+pp :: Show a => [a] -> IO ()
+pp = mapM_ print
 
-mID = "Ma" :. ("A" :. K 0 :> "a" :. F "A" :> F "A")
+pretty p = go [] p where
+  go c (B i) = c !! i
+  go c (F x) = x
+  go c (M v) = "?" ++ v
+  go c (a :@ b) = "(" ++ go c a ++ " " ++ go c b ++ ")"
+  go c (n :. a :\ b) = "\\" ++ n ++ ":" ++ go c a ++ "." ++ go (n:c) b
+  go c (n :. a :> b) = "(" ++ n ++ ":" ++ go c a ++ ") -> " ++ go (n:c) b
 
-stabilize (x : y : ys) | x == y = x
-stabilize (x : xs) = stabilize xs
 
-stripCtx (Problem _ exs _) = map (\(c :- e) -> e) exs
+bad = 
+  "x" :. F "A" :\ 
+  "y" :. F "A" :\ 
+  "z" :. F "A" :\ 
+  "x=y" :. ((F "=" :@ F "x") :@ F "y") :\ 
+  "y=z" :. ((F "=" :@ F "y") :@ F "z") :\ 
+    F "elim" 
+    :@ ("x'1" :. F "A" :\ "y'1" :. F "A" :\ "x=y'1" :. F "=" :@ F "x'1" :@ F "y'1" :\ M "M12") 
+    :@ ("x'1" :. F "A" :\ B 6) 
+    :@ M "M7" 
+    :@ M "M8" 
+    :@ M "M9"
 
-optional f x = x : f x
+-- tryR0split c p@(Problem _ _ goals _) = do
+--   goal@(c' :- _) <- goals 
+--   w <- c
 
-wash = 
-    nub
-  . (tryDelta =<<)
-  . map (\(Problem a b c) -> Problem a b (stabilize $ iterate (splitEqn =<<) c))
-  . (tryR0split =<<) 
-  . (tryPopLam =<<)
 
-letsgo t = (iterate wash [basic t]) !! 5
--- nub $ filter finished $ 
 
-finished (Problem _ [] []) = True
-finished (Problem _ _  _) = False
+
+-- r0split exs (c :- n :. t) w = 
+--   Delta 
+--     [(n, F w :@@ (M . nam <$> bindings))]
+--     ((c :-) <$> bindings )
+--     [Eqn ret t]
+--   where 
+--     tw = lk c w
+--     go acc q@(_ :- n :. a :> tws) = 
+--       let q'@(n' :. a : _ :- tws') = (op (M n') . cl (F n')) <$> op' q
+--       in go (n' :. a : acc) q'
+--     go acc tw = (acc, tw)
+--     (bindings, _ :- ret) = go [] (exs ++ c :- tw)
+
+
+
+
 
 aT = "A" :. (nf $ fromNamed $ K 0)
 
@@ -372,7 +420,16 @@ elim = "elim" :. (nf $ fromNamed $
   F "P" :@ F "x=y"
   )
 
-theory = ["P" :. K 0, eqT, refl, elim] -- [elim, refl, eqT, aT]
+eqTrans = "EQTRANS" :. (nf $ fromNamed $ 
+  "x" :. F "A" :>
+  "y" :. F "A" :>
+  "z" :. F "A" :>
+  "x=y" :. (F "=" :@ F "x" :@ F "y") :> 
+  "y=z" :. (F "=" :@ F "y" :@ F "z") :>
+  F "=" :@ F "x" :@ F "z"
+  )
+
+theory = [aT, eqT, refl, elim] -- [elim, refl, eqT, aT]
 
 false = nf $ fromNamed $ "Q" :. K 0 :> F "Q"
 
@@ -382,29 +439,6 @@ implies p q = "_" :. p :> q
 
 dni = "DNI" :. (implies (F "P") (notT $ notT $ F "P"))
 
-eqTrans = fromNamed $ 
-  "x" :. F "P" :\
-  "y" :. F "P" :\
-  "z" :. F "P" :\
-  "x=y" :. (F "=" :@ F "x" :@ F "y") :\
-  "y=z" :. (F "=" :@ F "y" :@ F "z") :\
-  F "eqElim" 
-  :@ ("q" :. F "P" :\ (F "=" :@ F "x" :@ F "q"))
-  :@ F "y"
-  :@ F "z"
-  :@ F "y=z" 
-  :@ F "x=y"
-
-pp :: Show x => [x] -> IO ()
-pp = mapM_ print
-
-ff = filter finished
-
-----
 
 
-sq = fromNamed $
-  "A" :. P :\ 
-  "f" :. ("x" :. F "A" :> "y" :. F "A" :> F "A") :\
-  "x" :. F "A" :\
-  F "f" :@ F "x" :@ F "x"
+
