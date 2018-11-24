@@ -6,14 +6,17 @@
 {-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE DeriveFoldable #-}
 {-# LANGUAGE DeriveTraversable #-}
+{-# LANGUAGE StandaloneDeriving #-}
 
 module E where
 
 import Data.List
 import Data.Maybe
+import Data.Function
 import Control.Monad
 import Control.Arrow
 
+import Debug.Trace
 
 type N = String
 
@@ -35,12 +38,11 @@ data E
  = M N
  | K I
  | B I
- | F N
  | E :@ E
  | B :\ E
  | B :> E
 
- deriving (Eq, Ord, Show)
+ deriving (Show, Ord)
 
 infixl 4 :@
 infixr 3 :\
@@ -105,12 +107,12 @@ r' f = r f f
 
 rb f n = r (f n) (f $ n + 1)
 
-op t = go 0 where
+op e t = go 0 e where
   go i = \case
    e | e == B i -> t
      | otherwise -> rb go i e
 
-cl t = go 0 where
+cl e t = go 0 e where
   go i = \case
    e | e == t -> B i
      | otherwise -> rb go i e
@@ -122,12 +124,29 @@ nf = \case
   _ :\ (f :@ B 0) | op (K 0) f == f -> f
   e -> r' nf e
 
-class Equiv a where
-  (===) :: a -> a -> Bool
+newtype NF = NF E 
 
-instance Equiv E where
-  x === y = (nf x == nf y)
+instance Eq NF where
+  (==) (NF a) (NF b) = case (a, b) of
+    (M a, M b) -> a == b
+    (K i, K j) -> i == j
+    (B i, B j) -> i == j
+    (a :@: b, a' :@: b') -> eq a b a' b'
+    (a :\: b, a' :\: b') -> eq a b a' b'
+    (a :>: b, a' :>: b') -> eq a b a' b'
+    _ -> False
+
+eq a b a' b' = NF a == NF a' && NF b == NF b'
+
+instance Eq E where
+  (==) = (==) `on` (NF . nf)
 
 
-
-
+fromNamed e = go [] e where
+  go ctx = \case
+    M ('?':n) -> M n
+    M n -> case elemIndex n ctx of
+      Just i -> B i
+    a :@ b -> go ctx a :@ go ctx b
+    Binder (n :. a) x b -> (n :. (go ctx a)) `x` (go (n:ctx) b)
+    e -> e
