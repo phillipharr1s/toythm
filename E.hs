@@ -23,7 +23,7 @@ type N = String
 type I = Int
 
 data B = N :. E
-  deriving (Ord, Show)
+  deriving (Show, Ord)
 
 infixl 6 :.
 
@@ -41,8 +41,7 @@ data E
  | E :@ E
  | B :\ E
  | B :> E
-
- deriving (Show, Ord)
+ deriving (Show, Eq, Ord)
 
 infixl 4 :@
 infixr 3 :\
@@ -109,37 +108,13 @@ rb f n = r (f n) (f $ n + 1)
 
 op e t = go 0 e where
   go i = \case
-   e | e == B i -> t
-     | otherwise -> rb go i e
+    e | e == B i -> t
+      | otherwise -> rb go i e
 
 cl e t = go 0 e where
   go i = \case
-   e | e == t -> B i
-     | otherwise -> rb go i e
-
-nf = \case
-  (nf -> a) :@ (nf -> b) 
-   | Binder _ _ f <- a -> nf $ op b f
-   | otherwise -> a :@ b
-  _ :\ (f :@ B 0) | op (K 0) f == f -> f
-  e -> r' nf e
-
-newtype NF = NF E 
-
-instance Eq NF where
-  (==) (NF a) (NF b) = case (a, b) of
-    (M a, M b) -> a == b
-    (K i, K j) -> i == j
-    (B i, B j) -> i == j
-    (a :@: b, a' :@: b') -> eq a b a' b'
-    (a :\: b, a' :\: b') -> eq a b a' b'
-    (a :>: b, a' :>: b') -> eq a b a' b'
-    _ -> False
-
-eq a b a' b' = NF a == NF a' && NF b == NF b'
-
-instance Eq E where
-  (==) = (==) `on` (NF . nf)
+    e | e == t -> B i
+      | otherwise -> rb go i e
 
 
 fromNamed e = go [] e where
