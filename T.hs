@@ -21,6 +21,8 @@ import NF
 
 import System.Timeout
 
+import Debug.Trace
+
 genM :: [N] -> Gen E
 genM [] = genK
 genM ns = Gen.element $ map M ns
@@ -65,7 +67,7 @@ good e = go 0 e where
 untypedId = "" :. T :\ B 0
 
 checkEquivNF a b = do
-  ans <- timeout 100 (pure $ a == b)
+  ans <- timeout 100 (pure $ nf' a == nf' b)
   pure $ ans == Just True
 
 prop_good :: Property
@@ -76,13 +78,12 @@ prop_good = property $ do
 prop_nf :: Property
 prop_nf = withShrinks 0 $ property $ do
   e <- forAll (genExpr 0)
-  assert (good $ nf e)
+  assert (good $ nf' e)
 
--- prop_Id :: Property
--- prop_Id = property $ do
---   e <- forAll (genExpr 0)
---   a <- evalIO $ checkEquivNF (untypedId :@ e) e
---   assert (not (good e) || a)
+prop_Id :: Property
+prop_Id = property $ do
+  e <- forAll (genExpr 0)
+  assert =<< (evalIO $ checkEquivNF (nf' $ untypedId :@ e) e)
 
 namedId = "A" :. K 0 :\ "a" :. M "A" :\ M "a"
 unNamedId = "A" :. K 0 :\ "a" :. B 0 :\ B 0

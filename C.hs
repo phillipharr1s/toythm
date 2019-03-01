@@ -37,7 +37,7 @@ op' (c :- Binder a x b) =
   a : c :- b `op` B (-length c)
 
 cl' x (a : c :- b) =
-  c :- Binder a x (b `cl` B (-length c))
+  c :- Binder a x (b `cl` B (-length (a : c)))
 
 opApp e@(c :- a :@ b) = Just (c :- a, c :- b)
 opApp _ = Nothing
