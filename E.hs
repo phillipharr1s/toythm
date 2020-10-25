@@ -38,6 +38,7 @@ data E
  = M N
  | K I
  | B I
+ | F I
  | E :@ E
  | B :\ E
  | B :> E
@@ -115,13 +116,3 @@ cl e t = go 0 e where
   go i = \case
     e | e == t -> B i
       | otherwise -> rb go i e
-
-
-fromNamed e = go [] e where
-  go ctx = \case
-    M ('?':n) -> M n
-    M n -> case elemIndex n ctx of
-      Just i -> B i
-    a :@ b -> go ctx a :@ go ctx b
-    Binder (n :. a) x b -> (n :. (go ctx a)) `x` (go (n:ctx) b)
-    e -> e
