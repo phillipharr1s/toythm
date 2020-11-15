@@ -1,81 +1,116 @@
+{-# LANGUAGE PatternSynonyms #-}
+{-# LANGUAGE ViewPatterns #-}
+{-# LANGUAGE PatternGuards #-}
+{-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE DeriveFunctor #-}
+{-# LANGUAGE DeriveFoldable #-}
+{-# LANGUAGE DeriveTraversable #-}
+{-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE OverloadedStrings #-}
+
+
+module Ring where
+
+import qualified Control.Exception
+
+import           Test.Tasty.Hedgehog
+import           Test.Tasty
+
+import           Hedgehog
+import qualified Hedgehog.Gen as Gen
+import qualified Hedgehog.Range as Range
+
+import Data.Either
+
+import E
+import C
+import NF
+import TT
+import PP
+
+import System.Timeout
+
+import Debug.Trace
 
 zee = "Z" :. K 0
 
-predicate = "" :. F "Z" :> K 0
+predicate = "" :. M "Z" :> K 0
 
-eq = "=" :. ("" :. F "Z" :> "" :. F "Z" :> K 0)
+eq = "=" :. ("" :. M "Z" :> "" :. M "Z" :> K 0)
 
 refl = "refl" :. (fromNamed $
-  "x" :. F "Z" :>
-  F "=" :@ F "x" :@ F "x"
+  "x" :. M "Z" :>
+  M "=" :@ M "x" :@ M "x"
   )
 
-eqElim = "eqElim" :. (fromNamed $ 
-  "P" :. predicate :> 
-  "x" :. F "Z" :>
-  "y" :. F "Z" :> 
-  "x=y" :. (F "=" :@ F "x" :@ F "y") :> 
-  "Px" :. (F "P" :@ F "x") :> 
-  F "P" :@ F "y"
+eqElim = "eqElim" :. (fromNamed $
+  "P" :. predicate :>
+  "x" :. M "Z" :>
+  "y" :. M "Z" :>
+  "x=y" :. (M "=" :@ M "x" :@ M "y") :>
+  "Px" :. (M "P" :@ M "x") :>
+  M "P" :@ M "y"
   )
 
-zero = "0" :. F "Z"
+zero = "0" :. M "Z"
 
-one = "1" :. F "Z"
+one = "1" :. M "Z"
 
-opA = fromNamed $ "" :. F "Z" :> "" :. F "Z" :> F "Z"
+opA = fromNamed $ "" :. M "Z" :> "" :. M "Z" :> M "Z"
 
 add = "+" :. opA
 
 mul = "*" :. opA
 
-comm = fromNamed $ 
-  "op" :. opA :\ 
-  "x" :. F "Z" :> 
-  "y" :. F "Z" :> 
-  F "=" 
-  :@ (F "op" :@ F "x" :@ F "y") 
-  :@ (F "op" :@ F "y" :@ F "x")
+comm = fromNamed $
+  "op" :. opA :\
+  "x" :. M "Z" :>
+  "y" :. M "Z" :>
+  M "="
+  :@ (M "op" :@ M "x" :@ M "y")
+  :@ (M "op" :@ M "y" :@ M "x")
 
-assoc = fromNamed $ 
-  "op" :. opA :\ 
-  "x" :. F "Z" :> 
-  "y" :. F "Z" :> 
-  "z" :. F "Z" :> 
-  F "=" 
-  :@ (F "op" :@ (F "op" :@ F "x" :@ F "y") :@ F "z") 
-  :@ (F "op" :@ F "x" :@ (F "op" :@ F "y" :@ F "z"))
+assoc = fromNamed $
+  "op" :. opA :\
+  "x" :. M "Z" :>
+  "y" :. M "Z" :>
+  "z" :. M "Z" :>
+  M "="
+  :@ (M "op" :@ (M "op" :@ M "x" :@ M "y") :@ M "z")
+  :@ (M "op" :@ M "x" :@ (M "op" :@ M "y" :@ M "z"))
 
-addComm = "+com" :. (nf $ comm :@ F "+")
+addComm = "+com" :. (nf' $ comm :@ M "+")
 
-mulComm = "*com" :. (nf $ comm :@ F "*")
+mulComm = "*com" :. (nf' $ comm :@ M "*")
 
-addAssoc = "+assoc" :. (nf $ assoc :@ F "+")
+addAssoc = "+assoc" :. (nf' $ assoc :@ M "+")
 
-mulAssoc = "*assoc" :. (nf $ assoc :@ F "*")
+mulAssoc = "*assoc" :. (nf' $ assoc :@ M "*")
 
 unit0 = ("unit0" :.) $ fromNamed $
-  "x" :. F "Z" :>
-  F "=" 
-  :@ (F "+" :@ F "0" :@ F "x")
-  :@ (F "x")
+  "x" :. M "Z" :>
+  M "="
+  :@ (M "+" :@ M "0" :@ M "x")
+  :@ (M "x")
 
-unit1 = ("unit1" :.) $ fromNamed $ 
-  "x" :. F "Z" :>
-  F "="
-  :@ (F "*" :@ F "1" :@ F "x")
-  :@ (F "x")
-  
+unit1 = ("unit1" :.) $ fromNamed $
+  "x" :. M "Z" :>
+  M "="
+  :@ (M "*" :@ M "1" :@ M "x")
+  :@ (M "x")
+
 
 dist = ("dist" :.) $
-  "x" :. F "Z" :>
-  "y" :. F "Z" :>
-  "z" :. F "Z" :>
-  F "="
-  :@ (F "*" :@ F "x" :@ (F "+" :@ F "y" :@ F "z"))
-  :@ (F "+" :@ (F "*" :@ F "x" :@ F "z") :@ (F "*" :@ F "x" :@ F "z"))
+  "x" :. M "Z" :>
+  "y" :. M "Z" :>
+  "z" :. M "Z" :>
+  M "="
+  :@ (M "*" :@ M "x" :@ (M "+" :@ M "y" :@ M "z"))
+  :@ (M "+" :@ (M "*" :@ M "x" :@ M "z") :@ (M "*" :@ M "x" :@ M "z"))
 
-ring = reverse $ 
+ring = reverse $
   [ zee
   , eq
   , refl
@@ -88,20 +123,20 @@ ring = reverse $
   , mulComm
   , addAssoc
   , mulAssoc
-  , unit0 
+  , unit0
   , unit1
   , dist
   ]
 
-eqTrans = fromNamed $ 
-  "x" :. F "Z" :\
-  "y" :. F "Z" :\
-  "z" :. F "Z" :\
-  "x=y" :. (F "=" :@ F "x" :@ F "y") :\
-  "y=z" :. (F "=" :@ F "y" :@ F "z") :\
-  F "eqElim" 
-  :@ ("q" :. F "Z" :\ (F "=" :@ F "x" :@ F "q"))
-  :@ F "y"
-  :@ F "z"
-  :@ F "y=z" 
-  :@ F "x=y"
+eqTrans = fromNamed $
+  "x" :. M "Z" :\
+  "y" :. M "Z" :\
+  "z" :. M "Z" :\
+  "x=y" :. (M "=" :@ M "x" :@ M "y") :\
+  "y=z" :. (M "=" :@ M "y" :@ M "z") :\
+  M "eqElim"
+  :@ ("q" :. M "Z" :\ (M "=" :@ M "x" :@ M "q"))
+  :@ M "y"
+  :@ M "z"
+  :@ M "y=z"
+  :@ M "x=y"

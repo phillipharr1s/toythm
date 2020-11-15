@@ -13,7 +13,7 @@
 
 module T where
 
-import qualified Control.Exception 
+import qualified Control.Exception
 
 import           Test.Tasty.Hedgehog
 import           Test.Tasty
@@ -42,7 +42,7 @@ genM [] = genK
 genM ns = Gen.element $ map M ns
 
 genK :: Gen E
-genK = Gen.frequency 
+genK = Gen.frequency
   [ (9, pure $ K 0)
   , (2, pure $ K 1)
   , (1, pure $ K 2)
@@ -138,7 +138,7 @@ prop_tcFalseImpliesTrue = property $ do
 
 prop_tcRing :: Property
 prop_tcRing = property $ do
-  assert $ isRight (tc $ fromNamed ring)
+  assert $ isRight (tc $ fromNamed eqTrans)
 
 namedId = "A" :. K 0 :\ "a" :. M "A" :\ M "a"
 namedIdType = "A" :. K 0 :> "a" :. M "A" :> M "A"
@@ -148,9 +148,9 @@ namedFalse = "A" :. K 0 :> M "A"
 
 namedTrue = "A" :. K 0 :> "a" :. M "A" :> M "A"
 
-namedFalseImpliesTruePf = 
+namedFalseImpliesTruePf =
   "p" :. namedFalse :\ M "p" :@ namedTrue
-namedFalseImpliesTrue = 
+namedFalseImpliesTrue =
   "p" :. namedFalse :> namedTrue
 
 allTests = testGroup "all"
@@ -162,16 +162,16 @@ allTests = testGroup "all"
   , parsePrint
   ]
 
-genIsSound = testGroup "basic sanity checks for gen" $ 
-  map (testProperty "") 
+genIsSound = testGroup "basic sanity checks for gen" $
+  map (testProperty "")
   [ prop_good
   , prop_nf
   , prop_named_nf
   , prop_fromNamed_Id
   ]
 
-goodConcreteEqns = testGroup "concrete eqns" $ 
-  map (testProperty "") $ 
+goodConcreteEqns = testGroup "concrete eqns" $
+  map (testProperty "") $
   map prop_Eqn
   [ (i, i)
   , (i, i :@ ti :@ i)
@@ -194,14 +194,14 @@ goodParamEqns = testGroup "parameterized eqns" $
 goodTC = testGroup "good typecheck" $
   map (testProperty "")
   [ prop_tcK
-  , prop_tcFalse 
+  , prop_tcFalse
   , prop_tcId
   , prop_tcFalseImpliesTrue
   , prop_tcRing
   ]
 
-parsePrint = testGroup "parse pretty print" $ 
-  map (testProperty "") 
+parsePrint = testGroup "parse pretty print" $
+  map (testProperty "")
   [ prop_print_parse
   ]
 
@@ -211,13 +211,13 @@ prop_print_parse = property $ do
   assert $ e == parseExpr (p e)
 
 expectBadTC :: C E -> Property
-expectBadTC ce = property $ do 
+expectBadTC ce = property $ do
   assert $ not $ isRight $ (tc ce)
 
 badTC = testGroup "bad typecheck" $
   map (\e -> testProperty (show e) $ expectBadTC ([] :- e))
   [ K 0 :@ K 0
-  , fromNamed $ 
+  , fromNamed $
   "A" :. K 0 :\ "a" :. M "A" :\ M "a" :@ M "a"
   ]
 

@@ -18,6 +18,8 @@ import Control.Arrow
 
 import Debug.Trace
 
+spy x = trace (show x) x
+
 type N = String
 
 type I = Int
@@ -28,7 +30,7 @@ data B = N :. E
 infixl 6 :.
 
 instance Eq B where
-  (_ :. a) == (_ :. b) = 
+  (_ :. a) == (_ :. b) =
     a == b
 
 nam (n :. e) = n
@@ -46,7 +48,7 @@ data E
 
 infixl 4 :@
 infixr 3 :\
-infixr 3 :> 
+infixr 3 :>
 
 pattern P = K 0
 pattern T = K 1
@@ -65,13 +67,13 @@ splitApp = second reverse . go where
     e -> (e, [])
 
 instance Eq (B -> E -> E) where
-  x == y = 
-    x ("" :. B 0) (B 0) 
+  x == y =
+    x ("" :. B 0) (B 0)
     ==
     y ("" :. B 0) (B 0)
 
 splitBinder x = \case
-  Binder a x' b | x == x' -> (h, a : cs) 
+  Binder a x' b | x == x' -> (h, a : cs)
     where (h, cs) = splitBinder x b
   e -> (e, [])
 

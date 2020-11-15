@@ -40,7 +40,7 @@ tc' = go where
       ta <- go a
       guard (isK ta)
       tb <- l $ go ==< b
-      pure $ ex $ cl' (:>) tb
+      pure $ ex $ close (:>) tb
     a :>! b -> do 
       ta <- go a
       tb <- go b

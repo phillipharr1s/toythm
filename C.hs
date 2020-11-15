@@ -36,25 +36,25 @@ l (c :- e) = (c :-) <$> e
 
 ex (c :- e) = e
 
-op' (c :- Binder a x b) =
+open (c :- Binder a x b) =
   a : c :- b `op` F (length c)
 
-cl' x (a : c :- b) =
+close x (a : c :- b) =
   c :- Binder a x (b `cl` F (length c))
 
 inBinder f t@(c :- Binder a x b) =
-  ex $ cl' x $ f <<= op' t
+  ex $ close x $ f <<= open t
 
 inBinderF f t@(c :- Binder a x b) =
-  fmap (ex . cl' x) $ l $ f <<= op' t
+  fmap (ex . close x) $ l $ f <<= open t
 
 opApp e@(c :- a :@ b) = Just (c :- a, c :- b)
 opApp _ = Nothing
 
-opLam e@(c :- n :. a :\ b) = Just (c :- a, op' e)
+opLam e@(c :- n :. a :\ b) = Just (c :- a, open e)
 opLam _ = Nothing
 
-opPi e@(c :- n :. a :> b) = Just (c :- a, op' e)
+opPi e@(c :- n :. a :> b) = Just (c :- a, open e)
 opPi _ = Nothing
 
 pattern a :@! b <- (opApp -> Just (a, b))
